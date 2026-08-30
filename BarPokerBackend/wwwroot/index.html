@@ -1,0 +1,190 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>Bar Poker Test Client</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background: #121212;
+            color: #e0e0e0;
+        }
+
+        .card {
+            display: inline-block;
+            background: white;
+            color: black;
+            padding: 10px 15px;
+            margin: 5px;
+            border-radius: 5px;
+            font-weight: bold;
+            font-size: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+            button:disabled {
+                background: #444;
+                color: #888;
+                cursor: not-allowed;
+            }
+
+        .table-box {
+            border: 2px solid #444;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Bar Poker Test Client</h1>
+
+    <div id="login-section">
+        <input type="text" id="playerName" placeholder="Enter Name" value="Dave" />
+        <button onclick="connectToPoker()">Join Table</button>
+    </div>
+
+    <div id="game-section" style="display:none;">
+        <div class="table-box">
+            <h2>Table Status: <span id="gamePhase">Waiting</span></h2>
+            <p><strong>Pot:</strong> $<span id="pot">0</span> | <strong>Highest Bet:</strong> $<span id="highestBet">0</span></p>
+            <p><strong>Community Cards:</strong> <span id="communityCards">None</span></p>
+        </div>
+
+        <div class="table-box">
+            <h3>Players at Table</h3>
+            <ul id="playerList"></ul>
+        </div>
+
+        <div class="table-box">
+            <h3>My Hand</h3>
+            <div id="myCards"></div>
+        </div>
+
+        <div class="table-box" id="action-panel">
+            <h3>Actions</h3>
+            <button id="btnStart" onclick="startGame()">Start Game</button>
+            <button id="btnFold" onclick="sendAction(0)" disabled>Fold</button>
+            <button id="btnCheck" onclick="sendAction(1)" disabled>Check</button>
+            <button id="btnCall" onclick="sendAction(2)" disabled>Call</button>
+            <button id="btnMinRaise" onclick="sendAction(3)" disabled>Min Raise</button>
+            <button id="btnPotRaise" onclick="sendAction(4)" disabled>Pot Raise</button>
+            <button id="btnAllIn" onclick="sendAction(5)" disabled>All-In</button>
+        </div>
+    </div>
+
+    <script>
+    let connection = null;
+
+    async function connectToPoker() {
+        const name = document.getElementById("playerName").value;
+        if (!name) return;
+
+        connection = new signalR.HubConnectionBuilder()
+            .withUrl("/pokerhub")
+            .withAutomaticReconnect()
+            .build();
+
+        connection.on("ReceiveTableUpdate", (state) => {
+            updateUI(state, name);
+        });
+
+        connection.on("Error", (msg) => {
+            alert("Error: " + msg);
+        });
+
+        try {
+            await connection.start();
+            await connection.invoke("JoinTable", "Table-1", name);
+
+            document.getElementById("login-section").style.display = "none";
+            document.getElementById("game-section").style.display = "block";
+        } catch (err) {
+            console.error(err);
+            alert("Connection failed: " + err);
+        }
+    }
+
+    async function startGame() {
+        await connection.invoke("StartGame", "Table-1");
+    }
+
+    async function sendAction(actionType, amount = 0) {
+        await connection.invoke("SubmitAction", "Table-1", actionType, amount);
+    }
+
+    function updateUI(state, myName) {
+        document.getElementById("gamePhase").innerText = state.gamePhase.toUpperCase();
+        document.getElementById("pot").innerText = state.pot;
+        document.getElementById("highestBet").innerText = state.currentHighestBet;
+
+        // Community cards
+        document.getElementById("communityCards").innerHTML = state.communityCards.map(c => `<span class="card">${c}</span>`).join(" ");
+
+        // Players
+        let playerListHtml = "";
+        let isMyTurn = false;
+        let myData = null;
+
+        for (let seat in state.players) {
+            let p = state.players[seat];
+            let activeIndicator = (seat == state.activeTurn && state.gamePhase !== "Waiting") ? " ⭐ [ACTIVE TURN]" : "";
+            let foldStatus = p.hasFolded ? " [FOLDED]" : "";
+
+            playerListHtml += `<li>Seat ${seat}: <strong>${p.name}</strong> - Chips: $${p.chipCount} - Bet: $${p.currentBet}${foldStatus}${activeIndicator}</li>`;
+
+            if (p.name.toLowerCase() === myName.toLowerCase()) {
+                myData = p;
+                if (seat == state.activeTurn && state.gamePhase !== "Waiting") {
+                    isMyTurn = true;
+                }
+            }
+        }
+        document.getElementById("playerList").innerHTML = playerListHtml;
+
+        // My hole cards
+        if (myData && myData.holeCards) {
+            document.getElementById("myCards").innerHTML = myData.holeCards.map(c => `<span class="card">${c}</span>`).join(" ");
+        }
+
+        // Button states
+        let isWaiting = state.gamePhase === "Waiting";
+        document.getElementById("btnStart").style.display = isWaiting ? "inline-block" : "none";
+
+        if (isWaiting || !isMyTurn || !myData) {
+            document.getElementById("btnFold").disabled = true;
+            document.getElementById("btnCheck").disabled = true;
+            document.getElementById("btnCall").disabled = true;
+            document.getElementById("btnMinRaise").disabled = true;
+            document.getElementById("btnPotRaise").disabled = true;
+            document.getElementById("btnAllIn").disabled = true;
+        } else {
+            document.getElementById("btnFold").disabled = !myData.canFold;
+            document.getElementById("btnCheck").disabled = !myData.canCheck;
+
+            let callBtn = document.getElementById("btnCall");
+            callBtn.disabled = !myData.canCall;
+            callBtn.innerText = `Call ($${myData.callAmount})`;
+
+            let minRaiseBtn = document.getElementById("btnMinRaise");
+            minRaiseBtn.disabled = !myData.canRaise;
+            minRaiseBtn.innerText = `Min Raise ($${myData.minRaiseAmount})`;
+
+            let potRaiseBtn = document.getElementById("btnPotRaise");
+            potRaiseBtn.disabled = !myData.canRaise;
+            potRaiseBtn.innerText = `Pot Raise ($${myData.potRaiseAmount})`;
+
+            document.getElementById("btnAllIn").disabled = !myData.canRaise;
+        }
+    }
+    </script>
+</body>
+</html>
